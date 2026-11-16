@@ -1,0 +1,14 @@
+# Fotos de documentos (contienen datos personales): nunca se suben
+documentos/
+pruebas/
+subidas/
+*.heic
+*.HEIC
+
+# Modelo entrenado (archivo grande, se genera con el cuaderno)
+modelo/
+*.keras
+
+# Archivos temporales
+.ipynb_checkpoints/
+__pycache__/
