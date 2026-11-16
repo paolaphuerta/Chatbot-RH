@@ -9,16 +9,16 @@ Proyecto del curso **Desarrollo de Aplicaciones con Inteligencia Artificial** �
 | Avance | Qué se agregó | Archivos |
 |---|---|---|
 | **1. Chatbot basado en reglas** | Intenciones por palabras clave, prefiltro, agenda de entrevistas y base de conocimiento en Excel | `chatbot_rh_el_sauce.py`, `base_conocimiento.xlsx` |
-| **2. Versión multimodal** | Clasificador de intenciones (TF-IDF + SVM), clasificador de documentos (CNN con EfficientNetB0) e integración en el chatbot | carpeta `avance2/` |
+| **2. Versión multimodal** | Clasificador de intenciones (TF-IDF + SVM), clasificador de documentos (CNN con EfficientNetB0) e integración en el chatbot | archivos que empiezan con `Avance2_` y `dataset_intenciones.csv` |
 
 ## Avance 2
 
 | Archivo | Descripción |
 |---|---|
-| `avance2/Avance2_Clasificador_Intenciones.ipynb` | Preprocesamiento (tokenización, normalización, stopwords, stemming), TF-IDF y comparación Naive Bayes vs SVM |
-| `avance2/dataset_intenciones.csv` | 320 frases etiquetadas en 15 intenciones |
-| `avance2/Avance2_Clasificador_Documentos.ipynb` | CNN con transferencia de aprendizaje (EfficientNetB0) para reconocer INE, licencia, comprobante de domicilio u otra imagen; métricas y matriz de confusión |
-| `avance2/Avance2_Integracion_Multimodal.ipynb` | Chatbot que entiende texto y valida los documentos enviados por el candidato |
+| `Avance2_Clasificador_Intenciones.ipynb` | Preprocesamiento (tokenización, normalización, stopwords, stemming), TF-IDF y comparación Naive Bayes vs SVM |
+| `dataset_intenciones.csv` | 320 frases etiquetadas en 15 intenciones |
+| `Avance2_Clasificador_Documentos.ipynb` | CNN con transferencia de aprendizaje (EfficientNetB0) para reconocer INE, licencia, comprobante de domicilio u otra imagen; métricas y matriz de confusión |
+| `Avance2_Integracion_Multimodal.ipynb` | Chatbot que entiende texto y valida los documentos enviados por el candidato |
 
 ### Resultados principales
 
