@@ -165,27 +165,50 @@ class AgenteReclutamiento:
         return self._decision(est, respuesta, capa, accion, resumen)
 
     # ---------- Capa reactiva ----------
+    def _solo_puesto(self, tokens, puesto):
+        """True si el mensaje solo nombra el puesto: «cocinera», «Ayudante de cocina», «el de mesero»."""
+        propias = set(self.kb.sinonimos[puesto]) | set(normalizar(self.kb.puestos[puesto]["nombre"]).split())
+        relleno = {"el", "la", "de", "del", "para", "ser", "como", "puesto", "vacante", "pues", "ese", "esa"}
+        resto = [t for t in tokens if t not in propias and t not in relleno and t not in self.nlp.stopwords]
+        # también acepta el puesto mal escrito («cosinero»)
+        return all(difflib.get_close_matches(t, list(propias), n=1, cutoff=0.85) for t in resto)
+
     def _reaccionar(self, est, per):
         tokens, puesto, intencion = per["tokens"], per["puesto"], per["intencion"]
+        ultimo = est["ultimo_puesto"]
 
+        # ¿Responde a la oferta de postularse que el agente acaba de hacer? («sí», «ok», «va», «no»)
         ofrecio = est.pop("ofrecio_postular", None)
-        if ofrecio and len(tokens) <= 2 and _si_no(per["texto"]):
+        afirmacion = _si_no(per["texto"])
+        if ofrecio and len(tokens) <= 3 and afirmacion:
             return self._iniciar_postulacion(est, ofrecio), "deliberativa", "iniciar_postulacion"
+        if ofrecio and len(tokens) <= 3 and afirmacion is False:
+            return ("Está bien. Si te interesa otro puesto o tienes alguna duda, aquí estoy. 🙂",
+                    "reactiva", "declinar_oferta")
 
         if puesto:
             est["ultimo_puesto"] = puesto
-            contenido = [t for t in tokens if t not in self.nlp.stopwords]
-            if len(contenido) == 1:                       # solo escribió el puesto
+            if intencion != "postularse" and self._solo_puesto(tokens, puesto):   # solo escribió el puesto
                 p = self.kb.puestos[puesto]
                 est["ofrecio_postular"] = puesto
                 return (f"{p['nombre']}: sueldo {p['sueldo']}, horario {' / '.join(p['horarios'])}, "
-                        f"{self._texto_exp(p)}. ¿Quieres saber algo más o postularte?"), "reactiva", "ofrecer_postulacion"
+                        f"{self._texto_exp(p)}.\n¿Te gustaría postularte para este puesto? (sí / no)"), \
+                    "reactiva", "ofrecer_postulacion"
         elif intencion in ("funciones", "sueldo", "horarios"):
-            puesto = est["ultimo_puesto"]                 # seguimiento: «¿y cuánto pagan?»
+            puesto = ultimo                               # seguimiento: «¿y cuánto pagan?»
 
-        if intencion == "postularse":
-            return self._iniciar_postulacion(est, puesto), "deliberativa", "iniciar_postulacion"
-        return self._respuesta_faq(intencion, puesto), "reactiva", "responder_faq"
+        if intencion == "postularse":                     # «me interesa» después de hablar de un puesto
+            return self._iniciar_postulacion(est, puesto or ofrecio or ultimo), "deliberativa", "iniciar_postulacion"
+
+        if per["texto"] in ("ok", "okay", "va", "sale", "bueno", "perfecto", "esta bien", "de acuerdo"):
+            return ("¡Perfecto! ¿Te puedo ayudar con algo más? Si quieres postularte, escribe \"me interesa\".",
+                    "reactiva", "acuse")
+
+        respuesta = self._respuesta_faq(intencion, puesto)
+        if puesto and intencion in ("funciones", "sueldo", "horarios", "experiencia", "propinas"):
+            est["ofrecio_postular"] = puesto              # mantiene la conversación hacia la meta
+            respuesta += f"\n\n¿Te gustaría postularte como {self.kb.puestos[puesto]['nombre']}? (sí / no)"
+        return respuesta, "reactiva", "responder_faq"
 
     # ---------- Capa deliberativa ----------
     def _iniciar_postulacion(self, est, puesto):
@@ -193,8 +216,9 @@ class AgenteReclutamiento:
         est["modo"] = "postulacion"
         if puesto:
             est["puesto"] = puesto
-            return f"¡Qué gusto! Te haré unas preguntas rápidas para el puesto de {self.kb.puestos[puesto]['nombre']}.\n" \
-                   + self._pregunta(est)
+            return (f"¡Qué gusto! Te haré unas preguntas rápidas para el puesto de "
+                    f"{self.kb.puestos[puesto]['nombre']} (si te interesa otro, escribe \"cancelar\").\n"
+                    + self._pregunta(est))
         return ("¡Qué gusto que quieras unirte! Te haré unas preguntas rápidas "
                 "(escribe \"cancelar\" en cualquier momento).\n" + self._pregunta(est))
 
