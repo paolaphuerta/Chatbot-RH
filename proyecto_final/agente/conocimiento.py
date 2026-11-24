@@ -106,7 +106,7 @@ class Almacen:
         orden = {d: i for i, d in enumerate(DIAS_HABILES)}
         with self._conexion() as c:
             filas = c.execute("SELECT dia, hora, nombre, puesto, documentos, por_revisar FROM citas").fetchall()
-        filas.sort(key=lambda f: (orden.get(f[0], 9), int(f[1].split(":")[0]) * 60 + int(f[1].split(":")[1])))
+        filas.sort(key=lambda f: (f[0], orden.get(f[0], 9), int(f[1].split(":")[0]) * 60 + int(f[1].split(":")[1])))
         return [dict(zip(["dia", "hora", "nombre", "puesto", "documentos", "por_revisar"], f)) for f in filas]
 
     # ---- bitácora (monitoreo) ----

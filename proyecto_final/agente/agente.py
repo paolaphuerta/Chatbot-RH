@@ -16,6 +16,13 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, timedelta
+
+try:
+    from zoneinfo import ZoneInfo
+    ZONA = ZoneInfo("America/Monterrey")          # hora de Ciudad Madero
+except Exception:                                  # sin base de zonas horarias
+    ZONA = None
 
 from .conocimiento import DIAS_HABILES
 from .nlp import normalizar
@@ -27,6 +34,12 @@ CORTO_DOC = {"ine": "INE", "licencia": "licencia", "comprobante": "comprobante d
 MAX_INTENTOS = 3
 SI = ["si", "claro", "sip", "simon", "correcto", "por supuesto", "ok", "va", "afirmativo"]
 NO = ["no", "nop", "nel", "negativo"]
+DIAS_SEMANA = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+DIAS_ACENTO = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+         "octubre", "noviembre", "diciembre"]
+ETAPAS = {"puesto": "Tu perfil", "edad": "Tu perfil", "horario": "Tu perfil", "experiencia": "Tu perfil",
+          "licencia": "Tu perfil", "dia": "Tu entrevista", "hora": "Tu entrevista", "nombre": "Tu entrevista"}
 NUMEROS = {"cero": 0, "ninguno": 0, "nada": 0, "uno": 1, "un": 1, "dos": 2, "tres": 3, "cuatro": 4,
            "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10}
 
@@ -42,6 +55,8 @@ class Decision:
     plan: list = field(default_factory=list)   # requisitos pendientes para cumplir la meta
     espera_documento: str = None  # 'ine', 'licencia' o 'comprobante' si el agente espera un archivo
     documentos: dict = field(default_factory=dict)
+    opciones: list = field(default_factory=list)  # respuestas rápidas sugeridas para el siguiente turno
+    progreso: dict = None         # {"paso", "total", "etapa"} durante la postulación
 
     def a_dict(self):
         return asdict(self)
@@ -57,6 +72,19 @@ def _si_no(texto):
     if any(_contiene(texto, s) for s in SI):
         return True
     return None
+
+
+def fecha_larga(iso):
+    """'2026-11-30' → 'lunes 30 de noviembre'."""
+    try:
+        d = date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return str(iso)
+    return f"{DIAS_ACENTO[d.weekday()]} {d.day} de {MESES[d.month - 1]}"
+
+
+def fecha_corta(d):
+    return f"{DIAS_ACENTO[d.weekday()].capitalize()} {d.day} {MESES[d.month - 1][:3]}"
 
 
 def _numero(tokens):
@@ -98,10 +126,8 @@ class AgenteReclutamiento:
             self.sesiones.pop(sesion, None)
 
     # ======================= Planificación (capa deliberativa) =======================
-    def plan(self, est):
-        """Lista de requisitos pendientes para cumplir la meta: postulación completa y cita agendada."""
-        if est["modo"] != "postulacion":
-            return []
+    def _pasos(self, est):
+        """Todos los requisitos de la meta, según el puesto elegido."""
         p = self.kb.puestos.get(est["puesto"])
         pasos = ["puesto", "edad", "horario"]
         if p and p["experiencia"] > 0:
@@ -109,7 +135,13 @@ class AgenteReclutamiento:
         if p and p["requiere_licencia"]:
             pasos.append("licencia")
         pasos += ["doc_ine"] + (["doc_licencia"] if p and p["requiere_licencia"] else []) + ["doc_comprobante"]
-        pasos += ["dia", "hora", "nombre"]
+        return pasos + ["dia", "hora", "nombre"]
+
+    def plan(self, est):
+        """Lista de requisitos pendientes para cumplir la meta: postulación completa y cita agendada."""
+        if est["modo"] != "postulacion":
+            return []
+        pasos = self._pasos(est)
         cumplido = {
             "puesto": est["puesto"] is not None, "edad": est["edad"] is not None,
             "horario": est["horario"] is True, "experiencia": est["experiencia"] is not None,
@@ -125,7 +157,41 @@ class AgenteReclutamiento:
             respuesta=respuesta, capa=capa, accion=accion, percepcion=percepcion,
             objetivo=objetivo, plan=plan,
             espera_documento=objetivo[4:] if objetivo and objetivo.startswith("doc_") else None,
-            documentos=dict(est["docs"]))
+            documentos=dict(est["docs"]), opciones=self._opciones(est, objetivo),
+            progreso=self._progreso(est, plan))
+
+    def _opciones(self, est, objetivo):
+        """Respuestas rápidas para que el candidato no tenga que escribir."""
+        if est["modo"] != "postulacion":
+            return ["Sí, quiero postularme", "No, gracias"] if est.get("ofrecio_postular") else []
+        if objetivo in ("horario", "licencia"):
+            return ["Sí", "No"]
+        if objetivo == "puesto":
+            return [p["nombre"] for p in self.kb.puestos.values()]
+        if objetivo == "experiencia":
+            return ["0", "1", "2", "3", "4", "5 o más"]
+        if objetivo == "dia":
+            return [fecha_corta(d) for d in self._fechas() if self._libres(d.isoformat())]
+        if objetivo == "hora":
+            return self._libres(est["dia"])
+        return []
+
+    def _progreso(self, est, plan):
+        if est["modo"] != "postulacion" or not plan:
+            return None
+        pasos = self._pasos(est)
+        etapa = "Tus documentos" if plan[0].startswith("doc_") else ETAPAS[plan[0]]
+        return {"paso": len(pasos) - len(plan) + 1, "total": len(pasos), "etapa": etapa}
+
+    def _fechas(self, n=5):
+        """Próximos n días hábiles a partir de mañana."""
+        hoy = datetime.now(ZONA).date() if ZONA else date.today()
+        dias, d = [], hoy
+        while len(dias) < n:
+            d += timedelta(days=1)
+            if DIAS_SEMANA[d.weekday()] in DIAS_HABILES:
+                dias.append(d)
+        return dias
 
     # ======================= Percepción =======================
     def _identificar_puesto(self, tokens):
@@ -247,13 +313,18 @@ class AgenteReclutamiento:
             valor = _numero(tokens)
             aclaracion = "Escribe tus años de experiencia con un número, por ejemplo: 2."
         elif objetivo == "dia":
-            valor = next((d for d in DIAS_HABILES if _contiene(texto, d)), None)
-            if valor is None and (_contiene(texto, "sabado") or _contiene(texto, "domingo")):
+            fechas = self._fechas()
+            fecha = next((d for d in fechas if _contiene(texto, DIAS_SEMANA[d.weekday()])), None)
+            if fecha is None:                                   # «el 30», «30 nov»
+                numeros = {int(n) for n in re.findall(r"\b\d{1,2}\b", texto)}
+                fecha = next((d for d in fechas if d.day in numeros), None)
+            if fecha is None and (_contiene(texto, "sabado") or _contiene(texto, "domingo")):
                 aclaracion = f"Las entrevistas son solo de {self.kb.entrevista['dias']}."
-            elif valor and not self._libres(valor):
-                valor, aclaracion = None, f"El {valor} ya no tiene espacios."
+            elif fecha is not None and not self._libres(fecha.isoformat()):
+                aclaracion = f"El {fecha_larga(fecha.isoformat())} ya no tiene espacios."
             else:
-                aclaracion = "No reconocí el día."
+                valor = fecha.isoformat() if fecha else None
+                aclaracion = "Elige uno de los días disponibles."
         elif objetivo == "hora":
             valor = self._extraer_hora(texto)
             if valor not in self.kb.espacios_del_dia():
@@ -325,7 +396,7 @@ class AgenteReclutamiento:
             est["hora"], est["nombre"] = None, None          # otro candidato tomó el espacio
             return "Lo siento, ese horario se acaba de ocupar. " + self._pregunta(est), "replanificar_cita"
         t = (f"📅 Listo, {est['nombre']}. Tu entrevista para {p['nombre']} quedó agendada:\n"
-             f"  • Día: {est['dia']}\n  • Hora: {est['hora']}\n  • Lugar: {self.kb.entrevista['lugar']}\n"
+             f"  • Día: {fecha_larga(est['dia'])}\n  • Hora: {est['hora']}\n  • Lugar: {self.kb.entrevista['lugar']}\n"
              f"  • Documentos recibidos: {', '.join(CORTO_DOC[d] for d in ok) or 'ninguno'}")
         if revision:
             t += f"\n  • Recursos humanos revisará en la entrevista: {', '.join(CORTO_DOC[d] for d in revision)}"
@@ -394,9 +465,16 @@ class AgenteReclutamiento:
         if objetivo.startswith("doc_"):
             return f"📎 Envía una foto o PDF de tu {NOMBRE_DOC[objetivo[4:]]}."
         if objetivo == "dia":
-            return f"¿Qué día te queda mejor para tu entrevista {e['modalidad']} de {e['duracion']}? ({e['dias']})"
+            dias = ", ".join(fecha_larga(d.isoformat()) for d in self._fechas() if self._libres(d.isoformat()))
+            return (f"¿Qué día te queda mejor para tu entrevista {e['modalidad']} de {e['duracion']}?\n"
+                    f"Días disponibles: {dias}.")
         if objetivo == "hora":
-            return f"Horarios disponibles el {est['dia']}: {', '.join(self._libres(est['dia']))}. ¿Cuál prefieres?"
+            libres = self._libres(est["dia"])
+            if not libres:
+                est["dia"] = None
+                return "Ese día se acaba de llenar. " + self._pregunta(est)
+            return (f"¿A qué hora el {fecha_larga(est['dia'])}? Hay {len(libres)} horarios disponibles, "
+                    f"de {libres[0]} a {libres[-1]}.")
         return "¡Perfecto! Para registrar tu cita, ¿cuál es tu nombre?"
 
     def _libres(self, dia):
