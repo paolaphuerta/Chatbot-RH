@@ -11,6 +11,7 @@ Las imágenes se procesan en memoria y no se guardan.
 import io
 import json
 import os
+import threading
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -60,6 +61,9 @@ class ClasificadorDocumentos:
             self.clases = json.load(f)
         self.simulado = os.environ.get("VISION_SIMULADA") == "1"   # solo para pruebas automáticas
         self.motor = "simulado" if self.simulado else None
+        # El intérprete de TFLite no admite dos clasificaciones al mismo tiempo:
+        # con varios candidatos simultáneos, cada imagen espera su turno.
+        self._candado = threading.Lock()
         if self.simulado:
             return
 
@@ -101,11 +105,13 @@ class ClasificadorDocumentos:
 
         x = np.asarray(img, dtype=np.float32)[None, ...]
         if self.motor == "tflite":
-            self.interprete.set_tensor(self.entrada, x)
-            self.interprete.invoke()
-            p = self.interprete.get_tensor(self.salida)[0]
+            with self._candado:
+                self.interprete.set_tensor(self.entrada, x)
+                self.interprete.invoke()
+                p = self.interprete.get_tensor(self.salida)[0].copy()
         else:
-            p = self.modelo.predict(x, verbose=0)[0]
+            with self._candado:
+                p = self.modelo.predict(x, verbose=0)[0]
         i = int(np.argmax(p))
         conf = float(p[i])
         probs = {c: round(float(v), 3) for c, v in zip(self.clases, p)}
