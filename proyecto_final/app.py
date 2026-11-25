@@ -95,9 +95,27 @@ def _secreto(clave, defecto=None):
 
 
 # ============================ Conexión con la API ============================
+def version_del_codigo():
+    """Huella de los archivos del backend (fecha de modificación y tamaño)."""
+    import hashlib
+    huella = hashlib.md5()
+    for carpeta in ("agente", "api", "datos", "modelo"):
+        ruta = os.path.join(RAIZ, carpeta)
+        for nombre in sorted(os.listdir(ruta)) if os.path.isdir(ruta) else []:
+            if nombre.endswith((".py", ".xlsx", ".csv", ".tflite", ".keras", ".json")):
+                info = os.stat(os.path.join(ruta, nombre))
+                huella.update(f"{nombre}{info.st_size}{info.st_mtime}".encode())
+    return huella.hexdigest()
+
+
+
 @st.cache_resource(show_spinner="Preparando al asistente…")
-def iniciar_api():
-    """Regresa la URL de la API. Si no hay una externa, levanta Flask en segundo plano."""
+def iniciar_api(version_codigo):
+    """Regresa la URL de la API. Si no hay una externa, levanta Flask en segundo plano.
+
+    `version_codigo` cambia cuando se modifica el agente, la API o los datos: así el servidor
+    se vuelve a crear con el código nuevo en lugar de seguir usando el que estaba en memoria.
+    """
     externa = _secreto("API_URL")
     if externa:
         return externa.rstrip("/")
@@ -134,7 +152,7 @@ def llamar_api(metodo, ruta, **kwargs):
 
 
 try:
-    API = iniciar_api()
+    API = iniciar_api(version_del_codigo())
 except Exception as e:                                           # p. ej., falta el modelo
     st.error("No se pudo iniciar el asistente. Intenta más tarde.")
     st.caption(f"Detalle técnico: {type(e).__name__}: {e}")
