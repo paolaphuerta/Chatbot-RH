@@ -41,6 +41,8 @@ class ErrorSolicitud(Exception):
 def crear_app(agente=None):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024           # 12 MB por petición
+    app.json.ensure_ascii = False                                  # acentos legibles en las respuestas
+    app.json.sort_keys = False                                     # conserva el orden de los campos
     inicio = time.time()
     agente = agente or construir_agente()
     almacen = agente.almacen
@@ -70,6 +72,26 @@ def crear_app(agente=None):
     def _muy_grande(_):
         g.detalle = "archivo demasiado grande"
         return jsonify({"ok": False, "error": "El archivo es demasiado grande (máximo 10 MB)."}), 413
+
+    # ---------------- Página de inicio: lista de servicios ----------------
+    @app.get("/")
+    def _inicio():
+        return jsonify({
+            "ok": True,
+            "servicio": "API del asistente de reclutamiento de El Sauce",
+            "endpoints": {
+                "GET  /api/salud": "Estado de la API y de los modelos",
+                "GET  /api/vacantes": "Puestos disponibles",
+                "POST /api/intencion": "Clasifica la intención de un mensaje (NLP)",
+                "POST /api/documento": "Clasifica una foto o PDF: INE, licencia, comprobante u otro",
+                "POST /api/agente/mensaje": "Conversación con el agente inteligente",
+                "POST /api/agente/documento": "Envía un documento dentro de la conversación",
+                "POST /api/agente/reiniciar": "Reinicia una conversación",
+                "POST /api/retroalimentacion": "Calificación útil / no útil de una respuesta",
+                "GET  /api/agenda": "Entrevistas agendadas (requiere clave de RH)",
+                "GET  /api/metricas": "Métricas de operación y monitoreo",
+            },
+        })
 
     @app.errorhandler(404)
     def _no_existe(_):
@@ -210,7 +232,7 @@ def crear_app(agente=None):
             "errores": len(errores),
             "tasa_error": round(len(errores) / len(eventos), 3) if eventos else 0,
             "latencia_promedio_ms": round(sum(lat) / len(lat), 1) if lat else 0,
-            "latencia_p95_ms": round(sorted(lat)[int(len(lat) * 0.95) - 1], 1) if len(lat) >= 20 else None,
+            "latencia_p95_ms": round(sorted(lat)[int(len(lat) * 0.95) - 1], 1) if len(lat) >= 5 else None,
             "por_ruta": {k: {"peticiones": v["peticiones"], "errores": v["errores"],
                              "latencia_promedio_ms": round(v["latencia_total"] / v["peticiones"], 1)}
                          for k, v in por_ruta.items()},
