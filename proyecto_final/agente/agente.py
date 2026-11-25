@@ -57,6 +57,7 @@ class Decision:
     documentos: dict = field(default_factory=dict)
     opciones: list = field(default_factory=list)  # respuestas rápidas sugeridas para el siguiente turno
     progreso: dict = None         # {"paso", "total", "etapa"} durante la postulación
+    cita: dict = None             # datos de la entrevista recién agendada
 
     def a_dict(self):
         return asdict(self)
@@ -158,7 +159,7 @@ class AgenteReclutamiento:
             objetivo=objetivo, plan=plan,
             espera_documento=objetivo[4:] if objetivo and objetivo.startswith("doc_") else None,
             documentos=dict(est["docs"]), opciones=self._opciones(est, objetivo),
-            progreso=self._progreso(est, plan))
+            progreso=self._progreso(est, plan), cita=est.pop("cita_confirmada", None))
 
     def _opciones(self, est, objetivo):
         """Respuestas rápidas para que el candidato no tenga que escribir."""
@@ -257,7 +258,7 @@ class AgenteReclutamiento:
             if intencion != "postularse" and self._solo_puesto(tokens, puesto):   # solo escribió el puesto
                 p = self.kb.puestos[puesto]
                 est["ofrecio_postular"] = puesto
-                return (f"{p['nombre']}: sueldo {p['sueldo']}, horario {' / '.join(p['horarios'])}, "
+                return (f"**{p['nombre']}** · sueldo **{p['sueldo']}** · horario **{' / '.join(p['horarios'])}** · "
                         f"{self._texto_exp(p)}.\n¿Te gustaría postularte para este puesto? (sí / no)"), \
                     "reactiva", "ofrecer_postulacion"
         elif intencion in ("funciones", "sueldo", "horarios"):
@@ -376,13 +377,13 @@ class AgenteReclutamiento:
         siguiente = self.plan(est)[0]
         prefijo = ""
         if siguiente == "doc_ine":
-            prefijo = (f"✅ ¡Tu perfil es compatible con el puesto de {p['nombre']}!\n"
+            prefijo = (f"✅ **¡Tu perfil es compatible con el puesto de {p['nombre']}!**\n"
                        "Antes de agendar tu entrevista necesito tus documentos.\n")
         return prefijo + self._pregunta(est), "registrar_dato"
 
     def _rechazar(self, est, motivo, sugerir=False):
         est["modo"] = "conversacion"
-        t = f"Gracias por tus respuestas. Por ahora no cumples con un requisito: {motivo}."
+        t = f"Gracias por tus respuestas. Por ahora no cumples con un requisito: **{motivo}**."
         if sugerir:
             t += f"\nTe pueden interesar puestos que no piden experiencia: {', '.join(self.kb.puestos_sin_experiencia())}."
         return t + "\nSi tienes otra duda, con gusto te ayudo."
@@ -395,11 +396,15 @@ class AgenteReclutamiento:
                                     [CORTO_DOC[d] for d in ok], [CORTO_DOC[d] for d in revision]):
             est["hora"], est["nombre"] = None, None          # otro candidato tomó el espacio
             return "Lo siento, ese horario se acaba de ocupar. " + self._pregunta(est), "replanificar_cita"
-        t = (f"📅 Listo, {est['nombre']}. Tu entrevista para {p['nombre']} quedó agendada:\n"
-             f"  • Día: {fecha_larga(est['dia'])}\n  • Hora: {est['hora']}\n  • Lugar: {self.kb.entrevista['lugar']}\n"
-             f"  • Documentos recibidos: {', '.join(CORTO_DOC[d] for d in ok) or 'ninguno'}")
+        est["cita_confirmada"] = {"fecha": est["dia"], "hora": est["hora"], "nombre": est["nombre"],
+                                  "puesto": p["nombre"], "lugar": self.kb.entrevista["lugar"],
+                                  "duracion": self.kb.entrevista["duracion"]}
+        t = (f"📅 **Listo, {est['nombre']}. Tu entrevista para {p['nombre']} quedó agendada:**\n"
+             f"  • **Día:** {fecha_larga(est['dia'])}\n  • **Hora:** {est['hora']}\n"
+             f"  • **Lugar:** {self.kb.entrevista['lugar']}\n"
+             f"  • **Documentos recibidos:** {', '.join(CORTO_DOC[d] for d in ok) or 'ninguno'}")
         if revision:
-            t += f"\n  • Recursos humanos revisará en la entrevista: {', '.join(CORTO_DOC[d] for d in revision)}"
+            t += f"\n  • **Recursos humanos revisará en la entrevista:** {', '.join(CORTO_DOC[d] for d in revision)}"
         est["modo"] = "conversacion"
         return t + "\n¡Te esperamos!", "agendar_entrevista"
 
@@ -422,7 +427,7 @@ class AgenteReclutamiento:
 
         if clase == esperado:
             est["docs"][esperado] = "aceptado"
-            msg, accion = f"✅ Recibí tu {NOMBRE_DOC[esperado]}.", "aceptar_documento"
+            msg, accion = f"✅ **Recibí tu {NOMBRE_DOC[esperado]}.**", "aceptar_documento"
         else:
             est["intentos"][esperado] = est["intentos"].get(esperado, 0) + 1
             if clase == "dudoso":
@@ -463,7 +468,7 @@ class AgenteReclutamiento:
         if objetivo == "licencia":
             return "¿Cuentas con licencia de conducir vigente? (sí / no)"
         if objetivo.startswith("doc_"):
-            return f"📎 Envía una foto o PDF de tu {NOMBRE_DOC[objetivo[4:]]}."
+            return f"📎 Envía una foto o PDF de tu **{NOMBRE_DOC[objetivo[4:]]}**."
         if objetivo == "dia":
             dias = ", ".join(fecha_larga(d.isoformat()) for d in self._fechas() if self._libres(d.isoformat()))
             return (f"¿Qué día te queda mejor para tu entrevista {e['modalidad']} de {e['duracion']}?\n"
@@ -518,12 +523,13 @@ class AgenteReclutamiento:
                     else "¿De qué puesto quieres conocer las funciones?\n" + self._lista_puestos())
         if intencion == "sueldo":
             if p:
-                return f"El sueldo de {p['nombre']} es de {p['sueldo']}{' más propinas' if p['propinas'] else ''}."
+                return (f"El sueldo de **{p['nombre']}** es de **{p['sueldo']}**"
+                        f"{' más propinas' if p['propinas'] else ''}.")
             return "Estos son los sueldos por puesto:\n" + "\n".join(
                 f"  • {x['nombre']}: {x['sueldo']}" for x in kb.puestos.values())
         if intencion == "horarios":
             if p:
-                return f"Horarios de {p['nombre']}: {' / '.join(p['horarios'])}. {g['turnos']}"
+                return f"Horarios de **{p['nombre']}**: **{' / '.join(p['horarios'])}**. {g['turnos']}"
             return "Horarios por puesto:\n" + "\n".join(
                 f"  • {x['nombre']}: {' / '.join(x['horarios'])}" for x in kb.puestos.values()) + "\n" + g["turnos"]
         if intencion == "flexibilidad":

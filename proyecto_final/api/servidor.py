@@ -9,6 +9,8 @@ Expone los servicios de inferencia y el agente:
     POST /api/agente/documento    El candidato envía un documento al agente    (multipart: sesion, archivo)
     POST /api/agente/reiniciar    Reinicia la conversación                     {"sesion": "..."}
     GET  /api/agenda              Entrevistas agendadas (recursos humanos)
+    GET  /api/vacantes            Puestos disponibles con sueldo, horario y requisitos
+    POST /api/retroalimentacion   El candidato califica una respuesta          {"util": true, "accion": "...", ...}
     GET  /api/metricas            Métricas de operación (monitoreo)
 
 Ejecución local:   python -m api.servidor          (puerto 5000)
@@ -108,6 +110,14 @@ def crear_app(agente=None):
             contadores["documentos"][per["clase"]] += 1
         g.detalle = f"{decision.capa}:{decision.accion}"
 
+    def _satisfaccion(retro):
+        if not retro:
+            return {"calificaciones": 0, "tasa_util": None, "no_utiles_por_accion": {}}
+        malas = Counter(r["accion"] for r in retro if not r["util"])
+        return {"calificaciones": len(retro),
+                "tasa_util": round(sum(r["util"] for r in retro) / len(retro), 3),
+                "no_utiles_por_accion": dict(malas)}
+
     # ---------------- Rutas ----------------
     @app.get("/api/salud")
     def salud():
@@ -165,6 +175,23 @@ def crear_app(agente=None):
     def agenda():
         return jsonify({"ok": True, "citas": almacen.citas()})
 
+    @app.get("/api/vacantes")
+    def vacantes():
+        return jsonify({"ok": True, "vacantes": [
+            {"clave": k, **{c: p[c] for c in ("nombre", "sueldo", "horarios", "experiencia", "propinas",
+                                              "requiere_licencia", "funciones")}}
+            for k, p in agente.kb.puestos.items()]})
+
+    @app.post("/api/retroalimentacion")
+    def retroalimentacion():
+        datos = _json("accion")
+        if not isinstance(datos.get("util"), bool):
+            raise ErrorSolicitud("El campo 'util' debe ser true o false.")
+        almacen.registrar_retro(datos["util"], str(datos.get("capa", ""))[:20], str(datos["accion"])[:40],
+                                str(datos.get("intencion") or "")[:30])
+        g.detalle = "util" if datos["util"] else "no_util"
+        return jsonify({"ok": True})
+
     @app.get("/api/metricas")
     def metricas():
         eventos = almacen.eventos()
@@ -192,6 +219,7 @@ def crear_app(agente=None):
             "acciones": dict(contadores["acciones"]),
             "ultimos_errores": errores[:10],
             "sesiones_activas": len(agente.sesiones),
+            "satisfaccion": _satisfaccion(almacen.retro()),
         })
 
     return app

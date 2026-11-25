@@ -82,6 +82,8 @@ class Almacen:
                 por_revisar TEXT, creada TEXT, PRIMARY KEY (dia, hora))""")
             c.execute("""CREATE TABLE IF NOT EXISTS eventos (
                 fecha TEXT, ruta TEXT, estado INTEGER, latencia_ms REAL, detalle TEXT)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS retroalimentacion (
+                fecha TEXT, util INTEGER, capa TEXT, accion TEXT, intencion TEXT)""")
 
     def _conexion(self):
         return sqlite3.connect(self.ruta, timeout=10)
@@ -114,6 +116,18 @@ class Almacen:
         with self._candado, self._conexion() as c:
             c.execute("INSERT INTO eventos VALUES (?,?,?,?,?)",
                       (datetime.now().isoformat(timespec="seconds"), ruta, estado, round(latencia_ms, 1), detalle))
+
+    # ---- retroalimentación de los candidatos (👍 / 👎) ----
+    def registrar_retro(self, util, capa, accion, intencion):
+        """Solo se guarda qué hizo el agente, no lo que escribió el candidato (privacidad)."""
+        with self._candado, self._conexion() as c:
+            c.execute("INSERT INTO retroalimentacion VALUES (?,?,?,?,?)",
+                      (datetime.now().isoformat(timespec="seconds"), int(bool(util)), capa, accion, intencion))
+
+    def retro(self):
+        with self._conexion() as c:
+            filas = c.execute("SELECT util, accion, intencion FROM retroalimentacion").fetchall()
+        return [dict(zip(["util", "accion", "intencion"], f)) for f in filas]
 
     def eventos(self, limite=500):
         with self._conexion() as c:

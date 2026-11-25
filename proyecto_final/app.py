@@ -9,10 +9,12 @@ La interfaz se comunica con la API REST (Flask) por HTTP:
 - Si no, levanta la API Flask dentro del mismo servidor, en segundo plano, en localhost.
 """
 import os
+import re
 import threading
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -76,6 +78,11 @@ h1, h2, h3, .titulo {{ font-family: 'Lora', serif !important; color: {CAFE} !imp
 [data-testid="stProgress"] > div > div > div > div {{ background-color: {NARANJA}; }}
 .tarjeta-doc {{ background: #FFF8F1; border: 1px dashed {NARANJA}; border-radius: 14px; padding: .8rem 1rem .2rem; }}
 .kpi {{ background: #FFF8F1; border-radius: 14px; padding: .7rem 1rem; }}
+.vacante-nombre {{ font-family: 'Lora', serif; font-weight: 700; font-size: 1.12rem; color: {CAFE}; }}
+.vacante-sueldo {{ color: {NARANJA}; font-weight: 700; font-size: 1.05rem; margin-bottom: .2rem; }}
+.vacante-dato {{ font-size: .88rem; color: #5B4A3A; }}
+[data-testid="stFeedback"] {{ opacity: .55; }}
+[data-testid="stFeedback"]:hover {{ opacity: 1; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -141,35 +148,54 @@ if "sesion" not in ss:
     ss.ultima = None             # última decisión del agente
     ss.version = 0               # cambia la clave de los widgets para limpiarlos
     ss.demo = False
+    ss.animar = None             # índice del mensaje que se muestra con efecto de escritura
+    ss.reintento = None          # mensaje que falló, para reintentarlo
+    ss.calificados = set()       # mensajes ya calificados con 👍 / 👎
 
 
 def nueva_conversacion():
     llamar_api("POST", "/api/agente/reiniciar", json={"sesion": ss.sesion})
     ss.sesion, ss.historial, ss.ultima = uuid.uuid4().hex, [], None
+    ss.reintento, ss.animar, ss.calificados = None, None, set()
     ss.version += 1
 
 
-def registrar_turno(texto_usuario, datos, error):
+def registrar_turno(texto_usuario, datos, error, reintentable=None):
     ss.historial.append({"rol": "user", "texto": texto_usuario})
     ss.version += 1                         # limpia los botones de respuesta y el cargador de archivos
     if error:
         ss.historial.append({"rol": "assistant", "texto": f"⚠️ {error}", "error": True})
+        ss.reintento = reintentable
         return
     ss.historial.append({"rol": "assistant", "texto": datos["respuesta"], "decision": datos})
-    ss.ultima = datos
+    ss.ultima, ss.reintento = datos, None
+    ss.animar = len(ss.historial) - 1
 
 
 def enviar_mensaje(texto):
     with st.spinner("Escribiendo…"):
         datos, error = llamar_api("POST", "/api/agente/mensaje", json={"sesion": ss.sesion, "mensaje": texto})
-    registrar_turno(texto, datos, error)
+    registrar_turno(texto, datos, error, reintentable=texto)
 
 
-def enviar_documento(archivo):
+def enviar_documento(nombre, contenido, tipo):
     with st.spinner("Revisando tu documento…"):
         datos, error = llamar_api("POST", "/api/agente/documento", data={"sesion": ss.sesion},
-                                  files={"archivo": (archivo.name, archivo.getvalue(), archivo.type)})
-    registrar_turno(f"📎 {archivo.name}", datos, error)
+                                  files={"archivo": (nombre, contenido, tipo)})
+    registrar_turno(f"📎 {nombre}", datos, error)
+
+
+def reintentar():
+    texto = ss.reintento
+    del ss.historial[-2:]                   # quita el mensaje y el error anteriores
+    enviar_mensaje(texto)
+
+
+def calificar(indice, decision, util):
+    ss.calificados.add(indice)
+    llamar_api("POST", "/api/retroalimentacion", json={
+        "util": util, "capa": decision["capa"], "accion": decision["accion"],
+        "intencion": decision.get("percepcion", {}).get("intencion")})
 
 
 # ============================ Componentes ============================
@@ -194,6 +220,106 @@ def encabezado(subtitulo):
     st.markdown(f"<div class='encabezado'><p>{subtitulo}</p></div>", unsafe_allow_html=True)
 
 
+def escribir(texto):
+    """Efecto de escritura para la respuesta más reciente."""
+    for palabra in texto.replace("\n", "  \n").split(" "):
+        yield palabra + " "
+        time.sleep(0.012)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def obtener_vacantes():
+    datos, _ = llamar_api("GET", "/api/vacantes")
+    return datos["vacantes"] if datos else []
+
+
+def tarjetas_vacantes():
+    vacantes = obtener_vacantes()
+    columnas = st.columns(2)
+    for i, v in enumerate(vacantes):
+        with columnas[i % 2].container(border=True):
+            etiquetas = []
+            if v["experiencia"] == 0:
+                etiquetas.append("<span class='chip chip-reactiva'>Sin experiencia</span>")
+            if v["propinas"]:
+                etiquetas.append("<span class='chip chip-deliberativa'>Con propinas</span>")
+            if v["requiere_licencia"]:
+                etiquetas.append("<span class='chip chip-plan'>Requiere licencia</span>")
+            exp = "Sin experiencia" if v["experiencia"] == 0 else f"{v['experiencia']} año{'s' if v['experiencia'] > 1 else ''} de experiencia"
+            st.markdown(f"<div class='vacante'><div class='vacante-nombre'>{v['nombre']}</div>"
+                        f"<div class='vacante-sueldo'>{v['sueldo']}</div>"
+                        f"<div class='vacante-dato'>🕒 {' / '.join(v['horarios'])}</div>"
+                        f"<div class='vacante-dato'>⭐ {exp}</div>"
+                        f"<div class='chips'>{''.join(etiquetas)}</div></div>", unsafe_allow_html=True)
+            if st.button("Me interesa", key=f"vac_{v['clave']}_{ss.version}", type="primary"):
+                enviar_mensaje(f"Me interesa el puesto de {v['nombre']}")
+                st.rerun()
+
+
+def archivo_calendario(c):
+    """Archivo .ics para agregar la entrevista al calendario del celular o de Google."""
+    d = date.fromisoformat(c["fecha"])
+    h, m = (int(x) for x in c["hora"].split(":"))
+    inicio = datetime(d.year, d.month, d.day, h, m)
+    fin = inicio + timedelta(minutes=int(re.search(r"\d+", c["duracion"]).group()))
+    f = lambda x: x.strftime("%Y%m%dT%H%M%S")
+    lugar = c["lugar"].replace(",", "\\,")
+    lineas = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//El Sauce//Reclutamiento//ES", "BEGIN:VEVENT",
+              f"UID:{uuid.uuid4().hex}@elsauce", f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+              f"DTSTART:{f(inicio)}", f"DTEND:{f(fin)}",
+              f"SUMMARY:Entrevista de trabajo en El Sauce ({c['puesto']})", f"LOCATION:{lugar}",
+              "DESCRIPTION:Lleva tu INE y tu comprobante de domicilio originales.",
+              "BEGIN:VALARM", "TRIGGER:-PT2H", "ACTION:DISPLAY", "DESCRIPTION:Entrevista en El Sauce", "END:VALARM",
+              "END:VEVENT", "END:VCALENDAR"]
+    google = ("https://calendar.google.com/calendar/render?action=TEMPLATE"
+              f"&text={quote('Entrevista de trabajo en El Sauce')}&dates={f(inicio)}/{f(fin)}"
+              f"&ctz=America/Monterrey&location={quote(c['lugar'])}"
+              f"&details={quote('Puesto: ' + c['puesto'] + '. Lleva tu INE y comprobante de domicilio originales.')}")
+    return "\r\n".join(lineas).encode("utf-8"), google
+
+
+def tarjeta_cita(c):
+    with st.container(border=True):
+        st.markdown("#### 🎉 ¡Te esperamos en tu entrevista!")
+        ics, google = archivo_calendario(c)
+        col1, col2 = st.columns(2)
+        col1.download_button("📅 Agregar a mi calendario", ics, file_name="entrevista_el_sauce.ics",
+                             mime="text/calendar", key=f"ics_{ss.version}")
+        col2.link_button("Abrir en Google Calendar", google)
+        st.caption("Recuerda llevar tus documentos originales. Si no puedes asistir, avísanos por este medio.")
+        st.button("Empezar una nueva conversación", on_click=nueva_conversacion, key=f"nueva_{ss.version}")
+
+
+def recuadro_documento(esperado):
+    with st.container(border=True):
+        st.markdown(f"**📎 Envía tu {NOMBRE_DOC[esperado]}**  \n<small>{AYUDA_DOC[esperado]}</small>",
+                    unsafe_allow_html=True)
+        acepto = st.checkbox("Acepto que mi documento se analice para validarlo. Entiendo que no se guarda.",
+                             key="consentimiento")
+        pestana_archivo, pestana_camara = st.tabs(["📁 Subir archivo", "📷 Tomar foto"])
+        with pestana_archivo:
+            subido = st.file_uploader("Documento", type=["jpg", "jpeg", "png", "webp", "heic", "pdf"],
+                                      key=f"archivo_{ss.version}", label_visibility="collapsed",
+                                      disabled=not acepto, help="Foto o PDF, máximo 10 MB.")
+            if subido and not subido.name.lower().endswith((".pdf", ".heic", ".heif")):
+                try:
+                    st.image(subido, width=220, caption="Vista previa: revisa que sea el documento correcto.")
+                except Exception:
+                    pass
+        with pestana_camara:
+            foto = st.camera_input("Toma la foto con el documento completo y sin reflejos",
+                                   key=f"camara_{ss.version}", disabled=not acepto)
+        if not acepto:
+            st.caption("Para enviar tu documento, primero marca la casilla de aceptación.")
+        elif subido or foto:
+            if st.button("Enviar documento", type="primary", key=f"enviar_{ss.version}"):
+                if subido:
+                    enviar_documento(subido.name, subido.getvalue(), subido.type)
+                else:
+                    enviar_documento(f"foto_{esperado}.jpg", foto.getvalue(), "image/jpeg")
+                st.rerun()
+
+
 # ============================ Página: chat del candidato ============================
 def pagina_candidato():
     encabezado("¿Quieres trabajar con nosotros? Pregúntame por vacantes, sueldos y horarios, "
@@ -209,7 +335,8 @@ def pagina_candidato():
             "- **Solo preguntamos requisitos del puesto:** edad mínima legal, disponibilidad de horario, experiencia "
             "y licencia para repartidores.\n"
             "- **Decisión humana:** el asistente organiza la postulación; recursos humanos revisa los documentos "
-            "originales y decide en la entrevista.")
+            "originales y decide en la entrevista.\n"
+            "- **Tus calificaciones (👍 👎)** solo guardan qué tipo de respuesta diste por útil, no lo que escribiste.")
 
     d = ss.ultima
     if d and d.get("progreso"):
@@ -221,25 +348,36 @@ def pagina_candidato():
     if not ss.historial:
         with st.chat_message("assistant", avatar=ARBOL):
             st.markdown("¡Hola! 👋 Soy el asistente de reclutamiento de **El Sauce**. ¿En qué te puedo ayudar?")
-    for turno in ss.historial:
+
+    for i, turno in enumerate(ss.historial):
+        decision = turno.get("decision")
         with st.chat_message(turno["rol"], avatar=ARBOL if turno["rol"] == "assistant" else None):
-            st.markdown(turno["texto"].replace("\n", "  \n"))
-            if ss.demo and turno.get("decision"):
-                chips_razonamiento(turno["decision"])
+            if i == ss.animar:
+                st.write_stream(escribir(turno["texto"]))
+                ss.animar = None
+            else:
+                st.markdown(turno["texto"].replace("\n", "  \n"))
+            if decision and ss.demo:
+                chips_razonamiento(decision)
+            if decision and i not in ss.calificados:
+                valor = st.feedback("thumbs", key=f"fb_{ss.sesion}_{i}")
+                if valor is not None:
+                    calificar(i, decision, bool(valor))
+            elif decision:
+                st.caption("Gracias por tu opinión.")
+
+    if ss.reintento:
+        st.button("🔁 Reintentar", on_click=reintentar)
+
+    # Elementos interactivos según lo que espera el agente
+    if d and d.get("cita"):
+        tarjeta_cita(d["cita"])
+    elif d and d.get("percepcion", {}).get("intencion") == "vacantes" and d["accion"] == "responder_faq":
+        tarjetas_vacantes()
 
     esperado = d.get("espera_documento") if d else None
-    if esperado:                                             # el agente espera un documento
-        with st.container(border=True):
-            st.markdown(f"**📎 Envía tu {NOMBRE_DOC[esperado]}**  \n<small>{AYUDA_DOC[esperado]} "
-                        f"Foto o PDF, máximo 10 MB.</small>", unsafe_allow_html=True)
-            acepto = st.checkbox("Acepto que mi documento se analice para validarlo. Entiendo que no se guarda.",
-                                 key="consentimiento")
-            archivo = st.file_uploader("Documento", type=["jpg", "jpeg", "png", "webp", "heic", "pdf"],
-                                       key=f"archivo_{ss.version}", label_visibility="collapsed",
-                                       disabled=not acepto)
-            if archivo and st.button("Enviar documento", type="primary"):
-                enviar_documento(archivo)
-                st.rerun()
+    if esperado:
+        recuadro_documento(esperado)
     else:
         opciones = (d or {}).get("opciones") or ([] if ss.historial else SUGERENCIAS)
         if opciones:
@@ -280,6 +418,14 @@ def pagina_rh():
         c2.metric("Latencia promedio", f"{m['latencia_promedio_ms']:.0f} ms")
         c3.metric("Tasa de error", f"{m['tasa_error']:.1%}")
         c4.metric("Conversaciones", m["sesiones_activas"])
+        sat = m.get("satisfaccion") or {}
+        c5, c6 = st.columns(2)
+        c5.metric("Respuestas útiles (👍)", f"{sat['tasa_util']:.0%}" if sat.get("tasa_util") is not None else "—",
+                  help="Porcentaje de respuestas calificadas como útiles por los candidatos.")
+        c6.metric("Calificaciones recibidas", sat.get("calificaciones", 0))
+        if sat.get("no_utiles_por_accion"):
+            st.caption("Respuestas calificadas como no útiles, por acción del agente: " + ", ".join(
+                f"{ACCIONES.get(k, k)} ({v})" for k, v in sat["no_utiles_por_accion"].items()))
 
         def grafica(titulo, datos, color):
             st.markdown(f"**{titulo}**")
